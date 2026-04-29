@@ -1,0 +1,24 @@
+[information]
+projectname=BootlegBlocks.mpr
+filename=BootlegBlocks.mrp
+appname=BootlegBlocks
+appid=100000	
+version=1001
+visible=1
+cpu=3
+vendor=mrdivdiz
+description=xd
+include=J:\Downloads\_SOURCE_CODE\BBKs\SKYSDK\include,J:\Downloads\_SOURCE_CODE\BBKs\SKYSDK\include\plugins
+config=mtk240
+
+[config_mtk240]
+output= C:\Users\mrdivdizUMPC\Downloads\vmrp_win32_20220102\vmrp_win32_20220102\mythroad\BootlegBlocks.mrp
+c_compiler=thumb
+bmp_mode=normal
+
+[files_mtk240]
+file01 = main.c
+file02 = main.h
+[files]
+
+
