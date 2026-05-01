@@ -364,19 +364,22 @@ void updateFaceMaskRegion(int x, int y, int z) {
 void gameStart() {
     int x, y, z;
     cam.pos.x = (float)WORLD_SX / 2.0f;
-    cam.pos.y = 6.0f;
+    cam.pos.y = 2.0f;
     cam.pos.z = -2.0f;
     cam.yaw = 0.0f;
     cam.pitch = 0.0f;
 
+    /* projectPoint() maps larger world Y to larger screen Y (i.e. lower
+       on screen), so deeper underground sits at higher y indices and the
+       camera sits at a low y just above the surface. */
     for (x = 0; x < WORLD_SX; x++) {
         for (y = 0; y < WORLD_SY; y++) {
             for (z = 0; z < WORLD_SZ; z++) {
-                if (y == 0) world[x][y][z] = (uint8)BLOCK_BEDROCK;
-                else if (y == 1 || y == 2) world[x][y][z] = (uint8)BLOCK_STONE;
-                else if (y == 3) world[x][y][z] = (uint8)BLOCK_DIRT;
-                else if (y == 4) world[x][y][z] = (uint8)BLOCK_GRASS;
-                else world[x][y][z] = (uint8)BLOCK_AIR;
+                if (y == WORLD_SY - 1)                              world[x][y][z] = (uint8)BLOCK_BEDROCK;
+                else if (y == WORLD_SY - 2 || y == WORLD_SY - 3)    world[x][y][z] = (uint8)BLOCK_STONE;
+                else if (y == WORLD_SY - 4)                         world[x][y][z] = (uint8)BLOCK_DIRT;
+                else if (y == WORLD_SY - 5)                         world[x][y][z] = (uint8)BLOCK_GRASS;
+                else                                                world[x][y][z] = (uint8)BLOCK_AIR;
             }
         }
     }
