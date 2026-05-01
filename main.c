@@ -22,6 +22,14 @@
 #define SIN_LUT_SIZEF 256.0F
 static float sin_lut[SIN_LUT_SIZE];
 uint8 world[WORLD_SX][WORLD_SY][WORLD_SZ];
+uint8 visibleFaces[WORLD_SX][WORLD_SY][WORLD_SZ];
+
+/* Face index -> neighbour offset.
+   Order matches `faces[6][4]` in drawCube:
+     0 = -Z, 1 = +Z, 2 = -Y, 3 = +Y, 4 = -X, 5 = +X */
+static const int8 face_dx[6] = {  0,  0,  0,  0, -1,  1 };
+static const int8 face_dy[6] = {  0,  0, -1,  1,  0,  0 };
+static const int8 face_dz[6] = { -1,  1,  0,  0,  0,  0 };
 mrc_jgraphics_context_t *gContext; 
 Camera cam;
 CBitmap handBmp;
@@ -214,6 +222,54 @@ int32 mrc_event(int32 ev, int32 p0, int32 p1) {
     return MR_SUCCESS;
 }
 
+uint8 getBlock(int x, int y, int z) {
+    if (x < 0 || x >= WORLD_SX) return (uint8)BLOCK_AIR;
+    if (y < 0 || y >= WORLD_SY) return (uint8)BLOCK_AIR;
+    if (z < 0 || z >= WORLD_SZ) return (uint8)BLOCK_AIR;
+    return world[x][y][z];
+}
+
+uint8 computeFaceMask(int x, int y, int z) {
+    int f;
+    uint8 mask;
+    if (world[x][y][z] == (uint8)BLOCK_AIR) return 0;
+    mask = 0;
+    for (f = 0; f < 6; f++) {
+        if (getBlock(x + face_dx[f], y + face_dy[f], z + face_dz[f]) == (uint8)BLOCK_AIR) {
+            mask = (uint8)(mask | (1 << f));
+        }
+    }
+    return mask;
+}
+
+void rebuildAllFaceMasks(void) {
+    int x, y, z;
+    for (x = 0; x < WORLD_SX; x++) {
+        for (y = 0; y < WORLD_SY; y++) {
+            for (z = 0; z < WORLD_SZ; z++) {
+                visibleFaces[x][y][z] = computeFaceMask(x, y, z);
+            }
+        }
+    }
+}
+
+/* Recompute the face mask for (x,y,z) and its 6 axis neighbours.
+   Call this after a single block changes (break / place). */
+void updateFaceMaskRegion(int x, int y, int z) {
+    int f, nx, ny, nz;
+    if (x >= 0 && x < WORLD_SX && y >= 0 && y < WORLD_SY && z >= 0 && z < WORLD_SZ) {
+        visibleFaces[x][y][z] = computeFaceMask(x, y, z);
+    }
+    for (f = 0; f < 6; f++) {
+        nx = x + face_dx[f];
+        ny = y + face_dy[f];
+        nz = z + face_dz[f];
+        if (nx >= 0 && nx < WORLD_SX && ny >= 0 && ny < WORLD_SY && nz >= 0 && nz < WORLD_SZ) {
+            visibleFaces[nx][ny][nz] = computeFaceMask(nx, ny, nz);
+        }
+    }
+}
+
 void gameStart() {
     int x, y, z;
     cam.pos.x = (float)WORLD_SX / 2.0f;
@@ -347,7 +403,7 @@ void fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint8 r, uint8
     }
 }
  
-void drawCube(int32 fx, int32 fy, int32 fz, int type, float cosY, float sinY, float cosP, float sinP) {
+void drawCube(int32 fx, int32 fy, int32 fz, int type, uint8 faceMask, float cosY, float sinY, float cosP, float sinP) {
     int16 px[8], py[8], pz[8];
     float s = 0.5f;
     float v_x[8], v_y[8], v_z[8];
@@ -387,6 +443,7 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, float cosY, float sinY, fl
     }
 
     for (f = 0; f < 6; f++) {
+        if (!(faceMask & (1 << f))) continue;
         face = faces[f];
         v0 = face[0];
         v1 = face[1];
@@ -409,12 +466,15 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, float cosY, float sinY, fl
 void gameDraw(float cosY, float sinY, float cosP, float sinP) {
     int x, y, z;
     uint8 type;
+    uint8 mask;
     for (x = 0; x < WORLD_SX; x++) {
         for (y = 0; y < WORLD_SY; y++) {
             for (z = 0; z < WORLD_SZ; z++) {
                 type = world[x][y][z];
                 if (type == BLOCK_AIR) continue;
-                drawCube((int32)x, (int32)y, (int32)z, (int)type, cosY, sinY, cosP, sinP);
+                mask = visibleFaces[x][y][z];
+                if (mask == 0) continue;
+                drawCube((int32)x, (int32)y, (int32)z, (int)type, mask, cosY, sinY, cosP, sinP);
             }
         }
     }
@@ -442,6 +502,7 @@ int32 mrc_init(void)
     initSinLUT();
     initSpriteData();
     gameStart();
+    rebuildAllFaceMasks();
     mrc_timerStart(globalTimer, 100, 0, mrc_draw, 1);
 	return MR_SUCCESS;
 }
