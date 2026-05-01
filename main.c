@@ -88,6 +88,10 @@ static const int8 face_dy[6] = {  0,  0, -1,  1,  0,  0 };
 static const int8 face_dz[6] = { -1,  1,  0,  0,  0,  0 };
 mrc_jgraphics_context_t *gContext; 
 Camera cam;
+/* 3D world position of the Mario billboard. y=2 puts him on top of the
+   grass surface (grass index = WORLD_SY-5 = 3, top of that block at world
+   Y=2.5). Z=4 places him a few blocks in front of the camera. */
+Vec3 marioPos = { 8.0f, 1.5f, 4.0f };
 CBitmap handBmp;
 CBitmap GUIBmp;
 CBitmap marioBmp;
@@ -167,6 +171,110 @@ void gDrawBitmap(CBitmap* bmp, int x, int y)
 void gDrawBitmapNt(CBitmap* bmp, int x, int y)
 {
 	mrc_bitmapShowEx((uint16*)bmp->pixels, x, y, bmp->width, bmp->width, bmp->height, BM_COPY, 0, 0);
+}
+
+/* Nearest-neighbor scaled blit of an RGB565 sprite to (dst_x..+dst_w,
+   dst_y..+dst_h). 0x0000 in the source is treated as transparent. Output is
+   produced as run-length horizontal lines via mrc_drawLine, so contiguous
+   same-color spans cost just one line draw each (cheap on MRE). */
+void gDrawBitmap3DScaled(CBitmap* bmp, int dst_x, int dst_y, int dst_w, int dst_h)
+{
+    uint16* pixels;
+    int sw, sh;
+    int row, col, src_y, src_x, y, x_at_col;
+    int run_start, x0, x1;
+    uint16 px, run_color;
+    uint8 r, g, b;
+    int flush;
+
+    if (bmp == NULL || dst_w <= 0 || dst_h <= 0) return;
+    pixels = (uint16*)bmp->pixels;
+    sw = bmp->width;
+    sh = bmp->height;
+
+    for (row = 0; row < dst_h; row++) {
+        y = dst_y + row;
+        if (y < 0 || y >= SCREEN_HEIGHT) continue;
+        src_y = (row * sh) / dst_h;
+        run_start = -1;
+        run_color = 0;
+        for (col = 0; col <= dst_w; col++) {
+            x_at_col = dst_x + col;
+            if (col < dst_w) {
+                src_x = (col * sw) / dst_w;
+                px = pixels[src_y * sw + src_x];
+            } else {
+                px = 0; /* sentinel flushes any open run */
+            }
+            flush = 0;
+            if (run_start >= 0) {
+                if (col >= dst_w || px != run_color ||
+                    x_at_col < 0 || x_at_col >= SCREEN_WIDTH) {
+                    flush = 1;
+                }
+            }
+            if (flush) {
+                x0 = dst_x + run_start;
+                x1 = x_at_col - 1;
+                if (x0 < 0) x0 = 0;
+                if (x1 >= SCREEN_WIDTH) x1 = SCREEN_WIDTH - 1;
+                if (x1 >= x0) {
+                    r = (uint8)(((run_color >> 11) & 0x1F) << 3);
+                    g = (uint8)(((run_color >>  5) & 0x3F) << 2);
+                    b = (uint8)((run_color & 0x1F) << 3);
+                    mrc_drawLine((int16)x0, (int16)y, (int16)x1, (int16)y,
+                                 r, g, b);
+                }
+                run_start = -1;
+            }
+            if (run_start < 0 && col < dst_w &&
+                px != 0x0000 && x_at_col >= 0 && x_at_col < SCREEN_WIDTH) {
+                run_start = col;
+                run_color = px;
+            }
+        }
+    }
+}
+
+/* Project a world point and draw `bmp` as a perspective-scaled billboard
+   centered on it. sprite_world_h_fx is the desired sprite height in world
+   units (Q16.16); on-screen size becomes sprite_world_h_fx * FOCAL/final_z.
+   Returns silently if Mario is behind the near plane or fully off-screen. */
+void drawSprite3D_fx(CBitmap* bmp,
+                     fx32 wx, fx32 wy, fx32 wz, fx32 sprite_world_h_fx,
+                     fx32 cosY_fx, fx32 sinY_fx,
+                     fx32 cosP_fx, fx32 sinP_fx,
+                     fx32 cam_x_fx, fx32 cam_y_fx, fx32 cam_z_fx)
+{
+    fx32 dxw, dyw, dzw, rx, rz;
+    fx32 final_x, final_y, final_z, invZ, screen_size_fx;
+    int16 sx, sy;
+    int dst_size, half;
+
+    dxw = wx - cam_x_fx;
+    dyw = wy - cam_y_fx;
+    dzw = wz - cam_z_fx;
+    rx = FX_MUL(dxw, cosY_fx) + FX_MUL(dzw, sinY_fx);
+    rz = -FX_MUL(dxw, sinY_fx) + FX_MUL(dzw, cosY_fx);
+    final_x = rx;
+    final_y = FX_MUL(dyw, cosP_fx) - FX_MUL(rz, sinP_fx);
+    final_z = FX_MUL(dyw, sinP_fx) + FX_MUL(rz, cosP_fx);
+
+    if (final_z < FX_NEAR_Z) return;
+    invZ = FX_DIV(FX_FOCAL, final_z);
+    sx = (int16)FX_TO_INT(FX_MUL(final_x, invZ) + FX_SCREEN_HW);
+    sy = (int16)FX_TO_INT(FX_MUL(final_y, invZ) + FX_SCREEN_HH);
+
+    screen_size_fx = FX_MUL(sprite_world_h_fx, invZ);
+    dst_size = FX_TO_INT(screen_size_fx);
+    if (dst_size < 2) return;
+    if (dst_size > SCREEN_HEIGHT) dst_size = SCREEN_HEIGHT;
+
+    half = dst_size >> 1;
+    if (sx + half < 0 || sx - half >= SCREEN_WIDTH) return;
+    if (sy + half < 0 || sy - half >= SCREEN_HEIGHT) return;
+
+    gDrawBitmap3DScaled(bmp, sx - half, sy - half, dst_size, dst_size);
 }
 
 int32 mrc_extRecvAppEvent(int32 app, int32 code, int32 param0, int32 param1)
@@ -612,9 +720,18 @@ void mrc_draw(int32 data)
     cam.pitch -= (float)diff_y * rot_speed;
 
     gameDraw(cY_fx, sY_fx, cP_fx, sP_fx, cam_x_fx, cam_y_fx, cam_z_fx);
+    /* Mario as a perspective-scaled billboard at marioPos. 2.0 world
+       units tall (= 2 blocks). Drawn after the world but before HUD so
+       hand/GUI overlay him. */
+    drawSprite3D_fx(&marioBmp,
+                    FX_FROM_FLOAT(marioPos.x),
+                    FX_FROM_FLOAT(marioPos.y),
+                    FX_FROM_FLOAT(marioPos.z),
+                    FX_FROM_INT(2),
+                    cY_fx, sY_fx, cP_fx, sP_fx,
+                    cam_x_fx, cam_y_fx, cam_z_fx);
     gDrawBitmap(&handBmp, SCREEN_WIDTH - handBmp.width, SCREEN_HEIGHT - handBmp.height - 70);
     gDrawBitmapNt(&GUIBmp, SCREEN_WIDTH - GUIBmp.width, SCREEN_HEIGHT - GUIBmp.height);
-    gDrawBitmap(&marioBmp, 8, 8);
     mrc_refreshScreen(0,0,SCREEN_WIDTH,SCREEN_HEIGHT);
 }
 int32 mrc_init(void)
