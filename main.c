@@ -10,15 +10,18 @@
 #define SCREEN_HEIGHT2 290
 #define SCREEN_WIDTH2F 130.0f
 #define SCREEN_HEIGHT2F 140.0f
-#define CHUNK_SIZE 2
+#define WORLD_SX 16
+#define WORLD_SY 8
+#define WORLD_SZ 16
 #define HALFPI 1.57079637f
 #define PI 3.14159265f
 #define TWO_PI 6.283185307f
 #define FOCAL_LENGTH 200.0f
+#define NEAR_Z 0.5f
 #define SIN_LUT_SIZE 256
 #define SIN_LUT_SIZEF 256.0F
 static float sin_lut[SIN_LUT_SIZE];
-BlockType world[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
+uint8 world[WORLD_SX][WORLD_SY][WORLD_SZ];
 mrc_jgraphics_context_t *gContext; 
 Camera cam;
 CBitmap handBmp;
@@ -159,9 +162,14 @@ int32 projectPoint(Vec3 world_pt, const Camera *cam, float cosY, float sinY, flo
     float final_y = y * cosP - rz * sinP;
     float final_z = y * sinP + rz * cosP;
     float invZ;
+
+    if (final_z < NEAR_Z) {
+        return MR_FAILED;
+    }
+
     *sz = (int16)final_z;
     invZ = FOCAL_LENGTH / final_z;
-    
+
     *sx = (int16)(final_x * invZ + SCREEN_WIDTH2F);
     *sy = (int16)(final_y * invZ + SCREEN_HEIGHT2F);
 
@@ -208,20 +216,20 @@ int32 mrc_event(int32 ev, int32 p0, int32 p1) {
 
 void gameStart() {
     int x, y, z;
-    cam.pos.x = CHUNK_SIZE / 2.0f;
-    cam.pos.y = 2.0f;
-    cam.pos.z = CHUNK_SIZE / 2.0f;
+    cam.pos.x = (float)WORLD_SX / 2.0f;
+    cam.pos.y = 6.0f;
+    cam.pos.z = -2.0f;
     cam.yaw = 0.0f;
     cam.pitch = 0.0f;
 
-    for (x = 0; x < CHUNK_SIZE; x++) {
-        for (y = 0; y < CHUNK_SIZE; y++) {
-            for (z = 0; z < CHUNK_SIZE; z++) {
-                if (y == 0) world[x][y][z] = BLOCK_BEDROCK;
-                else if (y == 1) world[x][y][z] = BLOCK_STONE;
-                else if (y == 2) world[x][y][z] = BLOCK_DIRT;
-                else if (y == 3) world[x][y][z] = BLOCK_GRASS;
-                else world[x][y][z] = BLOCK_AIR;
+    for (x = 0; x < WORLD_SX; x++) {
+        for (y = 0; y < WORLD_SY; y++) {
+            for (z = 0; z < WORLD_SZ; z++) {
+                if (y == 0) world[x][y][z] = (uint8)BLOCK_BEDROCK;
+                else if (y == 1 || y == 2) world[x][y][z] = (uint8)BLOCK_STONE;
+                else if (y == 3) world[x][y][z] = (uint8)BLOCK_DIRT;
+                else if (y == 4) world[x][y][z] = (uint8)BLOCK_GRASS;
+                else world[x][y][z] = (uint8)BLOCK_AIR;
             }
         }
     }
@@ -354,6 +362,8 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, float cosY, float sinY, fl
     };
     if (type == BLOCK_DIRT) { r = 139; g = 69; b = 19; }
     else if (type == BLOCK_GRASS) { r = 150; g = 210; b = 150; }
+    else if (type == BLOCK_STONE) { r = 128; g = 128; b = 128; }
+    else if (type == BLOCK_BEDROCK) { r = 64; g = 64; b = 64; }
     else { r = 128; g = 128; b = 128; }
     v_x[0] = (float)fx - s; v_y[0] = (float)fy - s; v_z[0] = (float)fz - s;
     v_x[1] = (float)fx + s; v_y[1] = (float)fy - s; v_z[1] = (float)fz - s;
@@ -369,12 +379,7 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, float cosY, float sinY, fl
         world_pt.x = v_x[i];
         world_pt.y = v_y[i];
         world_pt.z = v_z[i];
-        projectPoint(world_pt, &cam, cosY, sinY, cosP, sinP, &sx, &sy, &sz);
-        //if (projectPoint(world_pt, &cam, cosY, sinY, cosP, sinP, &sx, &sy, &sz) != MR_SUCCESS) {
-        //    return;
-        //}
-
-        if ((uint16)sx >= SCREEN_WIDTH2|| (uint16)sy >= SCREEN_HEIGHT2) {
+        if (projectPoint(world_pt, &cam, cosY, sinY, cosP, sinP, &sx, &sy, &sz) != MR_SUCCESS) {
             return;
         }
 
@@ -402,83 +407,18 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, float cosY, float sinY, fl
 }
 
 void gameDraw(float cosY, float sinY, float cosP, float sinP) {
-     drawCube(2.0f, 6.0f, 2.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(2.0f, 6.0f, 3.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(2.0f, 6.0f, 4.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(2.0f, 6.0f, 5.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(2.0f, 6.0f, 6.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(2.0f, 6.0f, 7.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(2.0f, 6.0f, 8.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(2.0f, 6.0f, 9.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 2.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 3.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 4.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 5.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 6.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 7.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 8.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(3.0f, 6.0f, 9.0f, 1,cosY,sinY,cosP,sinP);     
-     drawCube(3.0f, 6.0f, 9.0f, 1,cosY,sinY,cosP,sinP);     
-     drawCube(4.0f, 6.0f, 2.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(4.0f, 6.0f, 3.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(4.0f, 6.0f, 4.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(4.0f, 6.0f, 5.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(4.0f, 6.0f, 6.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(4.0f, 6.0f, 7.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(4.0f, 6.0f, 8.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(4.0f, 6.0f, 9.0f, 1,cosY,sinY,cosP,sinP);   
-     drawCube(5.0f, 6.0f, 2.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(5.0f, 6.0f, 3.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(5.0f, 6.0f, 4.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(5.0f, 6.0f, 5.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(5.0f, 6.0f, 6.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(5.0f, 6.0f, 7.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(5.0f, 6.0f, 8.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(5.0f, 6.0f, 9.0f, 1,cosY,sinY,cosP,sinP);   
-     drawCube(6.0f, 6.0f, 2.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(6.0f, 6.0f, 3.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(6.0f, 6.0f, 4.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(6.0f, 6.0f, 5.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(6.0f, 6.0f, 6.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(6.0f, 6.0f, 7.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(6.0f, 6.0f, 8.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(6.0f, 6.0f, 9.0f, 1,cosY,sinY,cosP,sinP);       
-     drawCube(7.0f, 6.0f, 2.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(7.0f, 6.0f, 3.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(7.0f, 6.0f, 4.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(7.0f, 6.0f, 5.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(7.0f, 6.0f, 6.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(7.0f, 6.0f, 7.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(7.0f, 6.0f, 8.0f, 1,cosY,sinY,cosP,sinP);
-     drawCube(7.0f, 6.0f, 9.0f, 1,cosY,sinY,cosP,sinP);
-      
-     
-    drawCube(3.0f, 5.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(4.0f, 5.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(5.0f, 5.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(6.0f, 5.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(7.0f, 5.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(7.0f, 4.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(4.0f, 3.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(5.0f, 3.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(6.0f, 3.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(3.0f, 2.0f, 10.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(3.0f, 1.0f, 10.0f, 2,cosY,sinY,cosP,sinP); 
-    
-    drawCube(5.0f, 5.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(6.0f, 5.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(7.0f, 5.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(8.0f, 5.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(9.0f, 5.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(9.0f, 4.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(6.0f, 3.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(7.0f, 3.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(8.0f, 3.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(5.0f, 2.0f, 7.0f, 2,cosY,sinY,cosP,sinP);
-    drawCube(5.0f, 1.0f, 7.0f, 2,cosY,sinY,cosP,sinP); 
-    
+    int x, y, z;
+    uint8 type;
+    for (x = 0; x < WORLD_SX; x++) {
+        for (y = 0; y < WORLD_SY; y++) {
+            for (z = 0; z < WORLD_SZ; z++) {
+                type = world[x][y][z];
+                if (type == BLOCK_AIR) continue;
+                drawCube((int32)x, (int32)y, (int32)z, (int)type, cosY, sinY, cosP, sinP);
+            }
+        }
     }
-    
+}
 void mrc_draw(int32 data)
 {
     float aY = -cam.yaw;
@@ -504,4 +444,4 @@ int32 mrc_init(void)
     gameStart();
     mrc_timerStart(globalTimer, 100, 0, mrc_draw, 1);
 	return MR_SUCCESS;
-}
+}
