@@ -90,6 +90,7 @@ mrc_jgraphics_context_t *gContext;
 Camera cam;
 CBitmap handBmp;
 CBitmap GUIBmp;
+CBitmap marioBmp;
 int g_curr_tx = 120;
 int g_curr_ty = 160;
 int diff_x = 0;
@@ -142,6 +143,7 @@ void initSpriteData()
 {
 	initSprite(&handBmp, 64, 64, (unsigned char*)_sprHand);
     initSprite(&GUIBmp, 240, 64, (unsigned char*)_sprGUIPH);
+    initSprite(&marioBmp, 16, 16, (unsigned char*)_sprMario);
 }
 
 float my_sinf(float x) {
@@ -612,6 +614,7 @@ void mrc_draw(int32 data)
     gameDraw(cY_fx, sY_fx, cP_fx, sP_fx, cam_x_fx, cam_y_fx, cam_z_fx);
     gDrawBitmap(&handBmp, SCREEN_WIDTH - handBmp.width, SCREEN_HEIGHT - handBmp.height - 70);
     gDrawBitmapNt(&GUIBmp, SCREEN_WIDTH - GUIBmp.width, SCREEN_HEIGHT - GUIBmp.height);
+    gDrawBitmap(&marioBmp, 8, 8);
     mrc_refreshScreen(0,0,SCREEN_WIDTH,SCREEN_HEIGHT);
 }
 int32 mrc_init(void)
