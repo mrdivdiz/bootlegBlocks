@@ -405,6 +405,7 @@ void fillTriangle(int x0, int y0, int x1, int y1, int x2, int y2, uint8 r, uint8
  
 void drawCube(int32 fx, int32 fy, int32 fz, int type, uint8 faceMask, float cosY, float sinY, float cosP, float sinP) {
     int16 px[8], py[8], pz[8];
+    uint8 valid[8];
     float s = 0.5f;
     float v_x[8], v_y[8], v_z[8];
     uint8 r, g, b;
@@ -435,11 +436,13 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, uint8 faceMask, float cosY
         world_pt.x = v_x[i];
         world_pt.y = v_y[i];
         world_pt.z = v_z[i];
-        if (projectPoint(world_pt, &cam, cosY, sinY, cosP, sinP, &sx, &sy, &sz) != MR_SUCCESS) {
-            return;
+        if (projectPoint(world_pt, &cam, cosY, sinY, cosP, sinP, &sx, &sy, &sz) == MR_SUCCESS) {
+            px[i] = sx; py[i] = sy; pz[i] = sz;
+            valid[i] = 1;
+        } else {
+            px[i] = 0; py[i] = 0; pz[i] = 0;
+            valid[i] = 0;
         }
-
-        px[i] = sx; py[i] = sy; pz[i] = sz;
     }
 
     for (f = 0; f < 6; f++) {
@@ -449,6 +452,10 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, uint8 faceMask, float cosY
         v1 = face[1];
         v2 = face[2];
         v3 = face[3];
+        /* Skip the face if any of its 4 corners failed the near-plane
+           test. Per-face skip is much friendlier than discarding the
+           whole cube the moment one corner crosses the camera plane. */
+        if (!(valid[v0] & valid[v1] & valid[v2] & valid[v3])) continue;
         edge1x = px[v1] - px[v0];
         edge1y = py[v1] - py[v0];
         edge2x = px[v2] - px[v0];
@@ -505,4 +512,4 @@ int32 mrc_init(void)
     rebuildAllFaceMasks();
     mrc_timerStart(globalTimer, 100, 0, mrc_draw, 1);
 	return MR_SUCCESS;
-}
+}
