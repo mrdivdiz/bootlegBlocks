@@ -479,16 +479,22 @@ static void drawString5(int x, int y, const char *s, int scale,
         s++;
     }
 }
+/* Timer tick period -- must match mrc_timerStart() in mrc_init().
+   Used by the FPS counter's tick-based fallback when mr_getTime()
+   does not advance (some MAUI builds stub it to 0). */
+#define FRAME_TICK_MS 33
 /* mr_getTime() returns elapsed milliseconds since app start (MRE SDK).
    The SDL2 test harness implements its own version. */
 extern int32 mr_getTime(void);
-/* Update + draw the FPS counter at top-left. Computes FPS over the
-   most recent ~1s window of mr_getTime() ticks, so the value is
-   stable instead of jittering every frame. */
+/* Update + draw the FPS counter at top-left.
+   Two-source clock: wall-clock from mr_getTime() if it advances,
+   otherwise fall back to a synthetic clock built from the timer
+   tick rate (FRAME_TICK_MS per call). The fallback always works
+   even on platforms where mr_getTime() returns 0/static. */
 void drawFpsHud(void)
 {
     char buf[16];
-    int n, i, len;
+    int n;
     int32 now = mr_getTime();
     int elapsed;
     g_fps_window_frames++;
@@ -498,6 +504,10 @@ void drawFpsHud(void)
         g_fps_inited = 1;
     }
     elapsed = (int)(now - g_fps_window_start_ms);
+    /* If the wall clock is not advancing (mr_getTime stuck at 0),
+       synthesise it from the tick count so the HUD still updates. */
+    if (elapsed <= 0)
+        elapsed = g_fps_window_frames * FRAME_TICK_MS;
     if (elapsed >= 1000) {
         g_fps = (g_fps_window_frames * 1000) / elapsed;
         g_fps_window_start_ms = now;
@@ -514,18 +524,14 @@ void drawFpsHud(void)
         buf[5] = (char)('0' + ((n / 10) % 10));
         buf[6] = (char)('0' + (n % 10));
         buf[7] = '\0';
-        len = 7;
     } else if (n >= 10) {
         buf[4] = (char)('0' + (n / 10));
         buf[5] = (char)('0' + (n % 10));
         buf[6] = '\0';
-        len = 6;
     } else {
         buf[4] = (char)('0' + n);
         buf[5] = '\0';
-        len = 5;
     }
-    (void)i; (void)len;
     /* Drop a 1-px black drop-shadow then bright yellow text. */
     drawString5(5, 5, buf, 2,   0,   0,   0);
     drawString5(4, 4, buf, 2, 255, 220,  40);
@@ -886,14 +892,31 @@ void drawCube(int32 fx, int32 fy, int32 fz, int type, uint8 faceMask,
     }
 }
 
+/* Margin (Q16.16, ~2 blocks) behind the camera plane. Whole (x,*,z)
+   columns whose yaw-rotated forward distance is past this margin
+   contribute nothing to the visible scene, so we skip them before
+   projecting any of their vertices. Per-cube vertex culling inside
+   projectPoint_fx already drops individual vertices behind near-Z;
+   doing the test here at column level avoids 8 fixed-point matrix
+   multiplies + a clip per cube in the dropped column. */
+#define BEHIND_MARGIN_FX   ((fx32)2 << 16)
+
 void gameDraw(fx32 cosY_fx, fx32 sinY_fx, fx32 cosP_fx, fx32 sinP_fx,
               fx32 cam_x_fx, fx32 cam_y_fx, fx32 cam_z_fx) {
     int x, y, z;
     uint8 type;
     uint8 mask;
+    fx32 dx_fx, dz_fx, rotZ_fx;
     for (x = 0; x < WORLD_SX; x++) {
-        for (y = 0; y < WORLD_SY; y++) {
-            for (z = 0; z < WORLD_SZ; z++) {
+        dx_fx = FX_FROM_INT(x) - cam_x_fx;
+        for (z = 0; z < WORLD_SZ; z++) {
+            dz_fx = FX_FROM_INT(z) - cam_z_fx;
+            /* Yaw-rotated forward distance using the same convention
+               as projectPoint_fx so visibility never disagrees with
+               the projector. */
+            rotZ_fx = -FX_MUL(dx_fx, sinY_fx) + FX_MUL(dz_fx, cosY_fx);
+            if (rotZ_fx < -BEHIND_MARGIN_FX) continue;
+            for (y = 0; y < WORLD_SY; y++) {
                 type = world[x][y][z];
                 if (type == BLOCK_AIR) continue;
                 mask = visibleFaces[x][y][z];
@@ -956,7 +979,8 @@ int32 mrc_init(void)
     initSpriteData();
     gameStart();
     rebuildAllFaceMasks();
-    mrc_timerStart(globalTimer, 100, 0, mrc_draw, 1);
+    /* 33 ms tick = 30 frames/sec target. */
+    mrc_timerStart(globalTimer, 33, 0, mrc_draw, 1);
 	return MR_SUCCESS;
 }
 /* ===== 1024-entry Q16.16 sine LUT (generated; see gen_sin_LUT.py) ===== */
