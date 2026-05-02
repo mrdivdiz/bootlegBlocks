@@ -88,10 +88,32 @@ static const int8 face_dy[6] = {  0,  0, -1,  1,  0,  0 };
 static const int8 face_dz[6] = { -1,  1,  0,  0,  0,  0 };
 mrc_jgraphics_context_t *gContext; 
 Camera cam;
-/* 3D world position of the Mario billboard. y=2 puts him on top of the
-   grass surface (grass index = WORLD_SY-5 = 3, top of that block at world
-   Y=2.5). Z=4 places him a few blocks in front of the camera. */
+/* 3D world position of the Mario billboard. y=1.5 puts him on top of
+   the grass surface (grass index = WORLD_SY-5 = 3, top of that block
+   at world Y=2.0). Z=4 places him a few blocks in front of the camera. */
 Vec3 marioPos = { 8.0f, 1.5f, 4.0f };
+/* ---- Animation / FPS / raycast-action globals ----
+   g_frame_count    -- monotonically incremented each mrc_draw, drives Mario
+                       walk animation (sin sweep around marioPos.x).
+   g_fps            -- frames-per-second computed over the most recent
+                       ~1s window via mr_getTime().
+   g_action_break / g_action_place
+                    -- one-shot flags set by mrc_event when the user hits
+                       '5' (break) or '0' (place); consumed by the next
+                       mrc_draw via castRayAndAct(). */
+int   g_frame_count        = 0;
+int   g_fps                = 0;
+int32 g_fps_window_start_ms = 0;
+int   g_fps_window_frames  = 0;
+int   g_fps_inited         = 0;
+int   g_action_break       = 0;
+int   g_action_place       = 0;
+/* Mario walk-cycle parameters. */
+#define MARIO_ANIM_SPEED   0.10f   /* radians per frame */
+#define MARIO_ANIM_RANGE   1.5f    /* world-units swing in +/-X */
+/* Player reach for break / place. */
+#define PLAYER_REACH       6.0f
+#define RAY_STEP           0.10f
 CBitmap handBmp;
 CBitmap GUIBmp;
 CBitmap marioBmp;
@@ -111,8 +133,13 @@ float my_fmodf(float x, float y) {
     return x - (float)((int)(x / y)) * y; 
 }
 
+/* sin(x) via the first 5 Taylor-series terms (degrees up to x^9).
+   The original code dropped the iterative `term *= ...` step and so was
+   wildly wrong for |x| > ~1 -- because the sin LUT is computed from
+   this function once at startup, that bug poisoned every later call to
+   my_sinf() with garbage values. */
 float my_sinf_legacy(float x) {
-    float res, term, angle, xopt;
+    float res, angle, xopt, term;
     int i;
     angle = my_fmodf(x, TWO_PI);
     if (angle > PI) angle -= TWO_PI;
@@ -121,7 +148,7 @@ float my_sinf_legacy(float x) {
     term = angle;
     xopt = -angle * angle;
     for (i = 1; i <= 4; i++) {
-        term = xopt / ((2.0f * i) * (2.0f * i + 1.0f));
+        term *= xopt / ((2.0f * i) * (2.0f * i + 1.0f));
         res += term;
     }
     return res;
@@ -143,7 +170,7 @@ __inline void initSprite(CBitmap* bmp, int w, int h, unsigned char* pixels)
 	bmp->pixels = pixels;
 }
 
-void initSpriteData()
+void initSpriteData(void)
 {
 	initSprite(&handBmp, 64, 64, (unsigned char*)_sprHand);
     initSprite(&GUIBmp, 240, 64, (unsigned char*)_sprGUIPH);
@@ -385,6 +412,173 @@ int32 projectPoint_fx(fx32 wx, fx32 wy, fx32 wz,
     return MR_SUCCESS;
 }
 
+/* ===== Tiny 3x5 bitmap font (digits + 'F','P','S',':',' ') =====
+   Each row is 3 bits stored in the low nibble; row 0 is the top.
+   We only need the chars used by the FPS HUD so the table is small. */
+static const uint8 _font3x5[16][5] = {
+    /* 0 */ { 0x7,0x5,0x5,0x5,0x7 },
+    /* 1 */ { 0x2,0x6,0x2,0x2,0x7 },
+    /* 2 */ { 0x6,0x1,0x2,0x4,0x7 },
+    /* 3 */ { 0x6,0x1,0x2,0x1,0x6 },
+    /* 4 */ { 0x5,0x5,0x7,0x1,0x1 },
+    /* 5 */ { 0x7,0x4,0x6,0x1,0x6 },
+    /* 6 */ { 0x3,0x4,0x6,0x5,0x2 },
+    /* 7 */ { 0x7,0x1,0x2,0x4,0x4 },
+    /* 8 */ { 0x2,0x5,0x2,0x5,0x2 },
+    /* 9 */ { 0x2,0x5,0x3,0x1,0x6 },
+    /* F */ { 0x7,0x4,0x6,0x4,0x4 },
+    /* P */ { 0x6,0x5,0x6,0x4,0x4 },
+    /* S */ { 0x3,0x4,0x2,0x1,0x6 },
+    /* : */ { 0x0,0x2,0x0,0x2,0x0 },
+    /* (sp)*/{ 0x0,0x0,0x0,0x0,0x0 },
+    /* . */ { 0x0,0x0,0x0,0x0,0x2 }
+};
+/* Map a logical char to a glyph index in _font3x5. */
+static int _font_glyph_index(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c == 'F') return 10;
+    if (c == 'P') return 11;
+    if (c == 'S') return 12;
+    if (c == ':') return 13;
+    if (c == '.') return 15;
+    return 14; /* space / unknown */
+}
+/* Draw one 3x5 glyph at (x,y) scaled by `scale` (1 = 3x5 px,
+   2 = 6x10, etc). Pixels are emitted as horizontal mrc_drawLine
+   runs of width `scale` so a scale=2 char is just 5 line draws. */
+static void drawGlyph5(int x, int y, int glyph, int scale,
+                       uint8 r, uint8 g, uint8 b)
+{
+    int row, col, dy, px_x, px_y;
+    if (glyph < 0 || glyph >= 16 || scale <= 0) return;
+    for (row = 0; row < 5; row++) {
+        uint8 bits = _font3x5[glyph][row];
+        for (col = 0; col < 3; col++) {
+            if (bits & (1 << (2 - col))) {
+                px_x = x + col * scale;
+                px_y = y + row * scale;
+                for (dy = 0; dy < scale; dy++) {
+                    mrc_drawLine((int16)px_x, (int16)(px_y + dy),
+                                 (int16)(px_x + scale - 1), (int16)(px_y + dy),
+                                 r, g, b);
+                }
+            }
+        }
+    }
+}
+/* Draw a NUL-terminated ASCII string left-to-right at (x,y). Each
+   char is 3*scale wide with a 1*scale gap, total advance = 4*scale. */
+static void drawString5(int x, int y, const char *s, int scale,
+                        uint8 r, uint8 g, uint8 b)
+{
+    int cx = x;
+    while (*s) {
+        drawGlyph5(cx, y, _font_glyph_index(*s), scale, r, g, b);
+        cx += 4 * scale;
+        s++;
+    }
+}
+/* mr_getTime() returns elapsed milliseconds since app start (MRE SDK).
+   The SDL2 test harness implements its own version. */
+extern int32 mr_getTime(void);
+/* Update + draw the FPS counter at top-left. Computes FPS over the
+   most recent ~1s window of mr_getTime() ticks, so the value is
+   stable instead of jittering every frame. */
+void drawFpsHud(void)
+{
+    char buf[16];
+    int n, i, len;
+    int32 now = mr_getTime();
+    int elapsed;
+    g_fps_window_frames++;
+    if (!g_fps_inited) {
+        g_fps_window_start_ms = now;
+        g_fps_window_frames = 0;
+        g_fps_inited = 1;
+    }
+    elapsed = (int)(now - g_fps_window_start_ms);
+    if (elapsed >= 1000) {
+        g_fps = (g_fps_window_frames * 1000) / elapsed;
+        g_fps_window_start_ms = now;
+        g_fps_window_frames = 0;
+    }
+    /* Build "FPS:NN" or "FPS:NNN" inline (no sprintf to keep MRE
+       happy on devices without full libc). */
+    buf[0] = 'F'; buf[1] = 'P'; buf[2] = 'S'; buf[3] = ':';
+    n = g_fps;
+    if (n < 0) n = 0;
+    if (n > 999) n = 999;
+    if (n >= 100) {
+        buf[4] = (char)('0' + (n / 100));
+        buf[5] = (char)('0' + ((n / 10) % 10));
+        buf[6] = (char)('0' + (n % 10));
+        buf[7] = '\0';
+        len = 7;
+    } else if (n >= 10) {
+        buf[4] = (char)('0' + (n / 10));
+        buf[5] = (char)('0' + (n % 10));
+        buf[6] = '\0';
+        len = 6;
+    } else {
+        buf[4] = (char)('0' + n);
+        buf[5] = '\0';
+        len = 5;
+    }
+    (void)i; (void)len;
+    /* Drop a 1-px black drop-shadow then bright yellow text. */
+    drawString5(5, 5, buf, 2,   0,   0,   0);
+    drawString5(4, 4, buf, 2, 255, 220,  40);
+}
+/* ===== Raycast block break / place =====
+   Step a ray from cam.pos along the look direction in small fixed
+   increments until either we hit a solid block or run past PLAYER_REACH.
+   On hit:
+     action == 0 (break): set the hit cell to AIR
+     action == 1 (place): set the LAST AIR cell on the ray to DIRT
+   In both cases we incrementally rebuild the affected face masks
+   via updateFaceMaskRegion(). */
+void castRayAndAct(int action)
+{
+    /* Direction matches the engine's yaw/pitch convention
+       (pitch positive = look down, in screen-Y-down world). */
+    float cosY = my_cosf(cam.yaw);
+    float sinY = my_sinf(cam.yaw);
+    float cosP = my_cosf(cam.pitch);
+    float sinP = my_sinf(cam.pitch);
+    float dirX =  sinY * cosP;
+    float dirY =  sinP;
+    float dirZ =  cosY * cosP;
+    float t;
+    int x, y, z;
+    int prevX = -999, prevY = -999, prevZ = -999;
+    for (t = 0.0f; t < PLAYER_REACH; t += RAY_STEP) {
+        x = (int)(cam.pos.x + dirX * t);
+        y = (int)(cam.pos.y + dirY * t);
+        z = (int)(cam.pos.z + dirZ * t);
+        if (x < 0 || x >= WORLD_SX ||
+            y < 0 || y >= WORLD_SY ||
+            z < 0 || z >= WORLD_SZ) {
+            prevX = x; prevY = y; prevZ = z;
+            continue;
+        }
+        if (world[x][y][z] != (uint8)BLOCK_AIR) {
+            if (action == 0) {
+                world[x][y][z] = (uint8)BLOCK_AIR;
+                updateFaceMaskRegion(x, y, z);
+            } else if (prevX >= 0 && prevX < WORLD_SX &&
+                       prevY >= 0 && prevY < WORLD_SY &&
+                       prevZ >= 0 && prevZ < WORLD_SZ) {
+                /* Place a DIRT block in the last AIR cell on the ray. */
+                world[prevX][prevY][prevZ] = (uint8)BLOCK_DIRT;
+                updateFaceMaskRegion(prevX, prevY, prevZ);
+            }
+            return;
+        }
+        prevX = x; prevY = y; prevZ = z;
+    }
+}
+
 int32 mrc_event(int32 ev, int32 p0, int32 p1) {
     if (ev == MR_KEY_PRESS) {
         dx = 0.0f;
@@ -405,6 +599,17 @@ int32 mrc_event(int32 ev, int32 p0, int32 p1) {
         dx += my_cosf(cam.yaw) * move_speed;
         dz -= my_sinf(cam.yaw) * move_speed;
         }
+        /* '5' breaks block at look-center, '0' places one in front.
+           Both ASCII codes (53, 48) and MR_KEY_NUM5/0 (if defined by
+           the SDK on this platform) are accepted. */
+        if (p0 == 53) g_action_break = 1;
+        if (p0 == 48) g_action_place = 1;
+#ifdef MR_KEY_NUM5
+        if (p0 == MR_KEY_NUM5) g_action_break = 1;
+#endif
+#ifdef MR_KEY_NUM0
+        if (p0 == MR_KEY_NUM0) g_action_place = 1;
+#endif
 
         cam.pos.x += dx;
         cam.pos.z += dz;
@@ -719,19 +924,29 @@ void mrc_draw(int32 data)
     cam.yaw   += (float)diff_x * rot_speed;
     cam.pitch -= (float)diff_y * rot_speed;
 
+    /* Per-frame counters & one-shot block actions. */
+    g_frame_count++;
+    if (g_action_break) { castRayAndAct(0); g_action_break = 0; }
+    if (g_action_place) { castRayAndAct(1); g_action_place = 0; }
     gameDraw(cY_fx, sY_fx, cP_fx, sP_fx, cam_x_fx, cam_y_fx, cam_z_fx);
-    /* Mario as a perspective-scaled billboard at marioPos. 2.0 world
-       units tall (= 2 blocks). Drawn after the world but before HUD so
-       hand/GUI overlay him. */
-    drawSprite3D_fx(&marioBmp,
-                    FX_FROM_FLOAT(marioPos.x),
-                    FX_FROM_FLOAT(marioPos.y),
-                    FX_FROM_FLOAT(marioPos.z),
-                    FX_FROM_INT(2),
-                    cY_fx, sY_fx, cP_fx, sP_fx,
-                    cam_x_fx, cam_y_fx, cam_z_fx);
+    /* Mario as a perspective-scaled billboard at marioPos.
+       Walk-cycle: oscillate +/-MARIO_ANIM_RANGE around base X by sin().
+       2.0 world units tall (= 2 blocks). Drawn after the world but
+       before HUD so hand/GUI overlay him. */
+    {
+        float walk = my_sinf((float)g_frame_count * MARIO_ANIM_SPEED) * MARIO_ANIM_RANGE;
+        drawSprite3D_fx(&marioBmp,
+                        FX_FROM_FLOAT(marioPos.x + walk),
+                        FX_FROM_FLOAT(marioPos.y),
+                        FX_FROM_FLOAT(marioPos.z),
+                        FX_FROM_INT(2),
+                        cY_fx, sY_fx, cP_fx, sP_fx,
+                        cam_x_fx, cam_y_fx, cam_z_fx);
+    }
     gDrawBitmap(&handBmp, SCREEN_WIDTH - handBmp.width, SCREEN_HEIGHT - handBmp.height - 70);
     gDrawBitmapNt(&GUIBmp, SCREEN_WIDTH - GUIBmp.width, SCREEN_HEIGHT - GUIBmp.height);
+    /* FPS HUD on top of everything. */
+    drawFpsHud();
     mrc_refreshScreen(0,0,SCREEN_WIDTH,SCREEN_HEIGHT);
 }
 int32 mrc_init(void)
